@@ -1,0 +1,92 @@
+
+
+services:
+  db:
+    image: mysql:5.7
+    environment:
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  db_reset:
+    image: mysql:5.7
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      bash -c "
+      mysql -h db -u root -p${DB_PASSWORD} -e \"
+      ALTER USER 'root'@'%' IDENTIFIED BY '${DB_PASSWORD}';
+      FLUSH PRIVILEGES;
+      \"
+      "
+    environment:
+      - DB_PASSWORD=${DB_PASSWORD}
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+    ports:
+      - "8080:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  redis:
+    image: redis:6.2
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    command: gunicorn council_election.wsgi:application --bind 0.0.0.0:8000
+    # command: >
+    #   sh -c "
+    #   while ! nc -z db 3306; do
+    #     echo 'Waiting for MySQL to be ready...';
+    #     sleep 1;
+    #   done;
+    #   gunicorn council_election.wsgi:application --bind 0.0.0.0:8000
+    #   "
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER}
+      
+
+  celery:
+    build: .
+    command: celery -A council_election worker --loglevel=info
+    volumes:
+      - .:/app
+    depends_on:
+      web:
+        condition:  service_started
+      redis:
+        condition: service_healthy
+    environment:
+      DJANGO_SETTINGS_MODULE: council_election.settings
+      CELERY_BROKER_URL: ${CELERY_BROKER}
+
+volumes:
+  mysql_data:
